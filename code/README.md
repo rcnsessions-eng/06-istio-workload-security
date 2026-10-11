@@ -1,12 +1,12 @@
-# PRD 06: Istio Workload Security
+# Istio Workload Security
 
-**Verified in an isolated local Kubernetes/Istio cluster, 2026-10-11.** This folder owns only mesh/deployment controls and connectivity verification. It reuses the PRD 05 gateway/MCP image, PRD 02/04 Rego files and PRD 05 Keycloak realm through explicit dependencies; no application implementation is copied.
+**Verified in an isolated local Kubernetes/Istio cluster, 2026-10-11.** This folder owns only mesh/deployment controls and connectivity verification. It reuses the identity-delegation gateway/MCP image, OPA authorization/constrained-tools Rego files and identity-delegation Keycloak realm through explicit dependencies; no application implementation is copied.
 
 ## Versions and Installation
 
 Pinned official kind 0.33.0, Kubernetes **1.35.8** node manifest digest `sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0`, Istio **1.31.1**. The official Istio support matrix includes Kubernetes 1.35. Binary/archive downloads are release-checksum verified; Apple Silicon archive SHA256: `e4ab5c1400d6cc07eeb83978b4febc89b22627fd1778cc1db9b8036c187f1b80`. Tooling is project-local under ignored `.tools/`, not globally installed. Downloads require internet. Docker needs several GiB of free disk/memory; this run used an 8 GiB Docker VM and left about 9.2 GiB host disk free. No Docker pruning or existing cluster changes occurred.
 
-First run [PRD 05's gate](../../05-identity-delegation/code/README.md) to build prerequisite images and generate synthetic credentials, then from this folder:
+First run [the identity-delegation gate](../../05-identity-delegation/code/README.md) to build prerequisite images and generate synthetic credentials, then from this folder:
 
 ```bash
 bash scripts/install_tools.sh
@@ -15,7 +15,7 @@ bash scripts/deploy.sh
 bash scripts/check.sh
 ```
 
-The dedicated cluster is `zero-trust-workload-security`. Every cluster operation uses **its own** ignored `artifacts/kubeconfig` and checks context `kind-zero-trust-workload-security`; cluster creation asserts that the user's original context stays unchanged. Do not redirect these scripts to a shared or production cluster. The original inspected context `lcp-development-1.33` remained unchanged after deployment, tests and rollback. Local Kubernetes access uses kubectl explicitly with `--kubeconfig artifacts/kubeconfig`; there is no exposed ingress/UI/NodePort here. The separate PRD 05 Compose UI remains at <http://127.0.0.1:8225/docs>.
+The dedicated cluster is `zero-trust-workload-security`. Every cluster operation uses **its own** ignored `artifacts/kubeconfig` and checks context `kind-zero-trust-workload-security`; cluster creation asserts that the user's original context stays unchanged. Do not redirect these scripts to a shared or production cluster. The original inspected context `lcp-development-1.33` remained unchanged after deployment, tests and rollback. Local Kubernetes access uses kubectl explicitly with `--kubeconfig artifacts/kubeconfig`; there is no exposed ingress/UI/NodePort here. The separate identity-delegation Compose UI remains at <http://127.0.0.1:8225/docs>.
 
 This project has its own hardened, offline [docker-compose.yml](docker-compose.yml) for lint/format/strict-mypy gates. Mesh runtime is Kubernetes, not simulated in Compose. Deployment imports generated fixture credentials into Kubernetes Secrets via stdin and server-side apply (no token arguments or secret-bearing last-applied annotations). These local Secrets are not an external encrypted production secret store. Re-running deployment retains secrets/config maps and waits for readiness; existing in-memory fixture data persists only while its pod survives.
 
@@ -30,7 +30,7 @@ flowchart LR
     MCP[Approved MCP service account] -->|mTLS learning.local identity| Proxy[Gateway Envoy: narrow ALLOW]
     Wrong[Enrolled wrong service account] -->|RBAC 403| Proxy
     Plain[Unenrolled plaintext test pod] -->|TLS transport rejection| Proxy
-    Proxy --> Gateway[PRD 05 token scopes and membership]
+    Proxy --> Gateway[Identity gateway token scopes and membership]
     Gateway -->|mTLS gateway identity| OPA[OPA peer-restricted decision endpoints]
     Gateway --> Repository[Current tenant owner and transaction checks]
     Fixture[Non-mesh synthetic Keycloak fixture] -->|Local JWKS and token issuance| Gateway
@@ -40,7 +40,7 @@ flowchart LR
 
 Kubelet HTTP probes are rewritten by Istio to its agent health port; gateway/OPA readiness passed with strict mTLS. The gateway application `/health` is allowed **only** from the approved peer, not from any workload. Proxy admin/certificate access at pod localhost 15000 is verification-only, never an ingress endpoint. No HTTP gateway is installed; adding one would require a separate explicit service account/rule and verified authentication model. No application inbound port is excluded from the mesh.
 
-`plaintext-client` deliberately has injection disabled and a dedicated account to test unenrolled rejection; it is a negative fixture, not an exemption on the gateway. `unapproved-client` is enrolled but has the wrong service account. Separate `learning-identity-fixtures` namespace is deliberately not mesh-enrolled; Keycloak is a synthetic local test dependency with plain-HTTP/`dev-file` issuance, inherited from PRD 05. Its file database is disposable pod storage, not a persistent volume; the change from `dev-mem` fixes an observed empty H2 session-table failure. Rollout and real issuance/mesh checks passed after this repair. The gateway's outbound JWKS traffic to it is not protected by mTLS. Production requires TLS/enrollment and an explicit egress/IdP boundary. No NetworkPolicy-wide egress isolation, compromised-node protection or production secret posture is claimed.
+`plaintext-client` deliberately has injection disabled and a dedicated account to test unenrolled rejection; it is a negative fixture, not an exemption on the gateway. `unapproved-client` is enrolled but has the wrong service account. Separate `learning-identity-fixtures` namespace is deliberately not mesh-enrolled; Keycloak is a synthetic local test dependency with plain-HTTP/`dev-file` issuance, inherited from the identity-delegation workshop. Its file database is disposable pod storage, not a persistent volume; the change from `dev-mem` fixes an observed empty H2 session-table failure. Rollout and real issuance/mesh checks passed after this repair. The gateway's outbound JWKS traffic to it is not protected by mTLS. Production requires TLS/enrollment and an explicit egress/IdP boundary. No NetworkPolicy-wide egress isolation, compromised-node protection or production secret posture is claimed.
 
 ## Actual Checks
 
@@ -53,7 +53,7 @@ Kubelet HTTP probes are rewritten by Istio to its agent health port; gateway/OPA
 - Approved MCP cannot call OPA directly: mesh RBAC 403.
 - Real Keycloak user/workload tokens through the approved workload: own progress, four official SDK MCP tools and idempotent writes succeed; foreign learner, spoof headers, wrong token context/signature fail with no private output.
 
-Initial integration failures exposed Kubernetes ConfigMap policy symlink duplication and an incorrect interior wildcard; named Rego files and the documented URI template repaired those deployment defects without changing policy logic. Deprecated injection annotation was replaced by its supported label and reanalysis is clean. PRD 05's separate gate previously verified 99 Python/21 Rego tests and zero-write revocation/expiry cases. No claim is made that those are new PRD 06 unit tests.
+Initial integration failures exposed Kubernetes ConfigMap policy symlink duplication and an incorrect interior wildcard; named Rego files and the documented URI template repaired those deployment defects without changing policy logic. Deprecated injection annotation was replaced by its supported label and reanalysis is clean. The identity-delegation workshop's separate gate previously verified 99 Python/21 Rego tests and zero-write revocation/expiry cases. No claim is made that those are new workload-security unit tests.
 
 ## Rollback and Cleanup
 
@@ -61,9 +61,9 @@ Initial integration failures exposed Kubernetes ConfigMap policy symlink duplica
 bash scripts/rollback.sh
 bash scripts/deploy.sh
 bash scripts/check.sh
-# Destructive only to this approved disposable cluster:
-CONFIRM_PRD06_DELETE=zero-trust-workload-security bash scripts/cleanup.sh
 docker compose down
 ```
 
-Rollback **stops the gateway** and keeps strict mTLS/caller restrictions; it never opens the mesh or downgrades user authentication. Scaling to zero, idempotent restoration and all live checks were executed successfully. Cleanup is provided but not executed; the dedicated test cluster remains ready for later milestones. Deleting it discards all volatile fixture data. Production release rollback/readiness/supply-chain controls belong to PRDs 09-10, not this local lab.
+For deliberate cleanup, inspect `scripts/cleanup.sh` and set its required confirmation variable to the owned cluster name before running it. The confirmation guard must remain enabled.
+
+Rollback **stops the gateway** and keeps strict mTLS/caller restrictions; it never opens the mesh or downgrades user authentication. Scaling to zero, idempotent restoration and all live checks were executed successfully. Cleanup is provided but not executed; the dedicated test cluster remains ready for later milestones. Deleting it discards all volatile fixture data. Production release rollback/readiness/supply-chain controls belong to the supply-chain and deployment workshops, not this local lab.
