@@ -1,0 +1,39 @@
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata: {name: strict-namespace, namespace: learning-mesh}
+spec:
+  mtls: {mode: STRICT}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata: {name: gateway-approved-mcp-only, namespace: learning-mesh}
+spec:
+  selector: {matchLabels: {app: learning-gateway}}
+  action: ALLOW
+  rules:
+    - from:
+        - source: {principals: ["learning.local/ns/learning-mesh/sa/learning-mcp"]}
+      to:
+        - operation:
+            ports: ["8000"]
+            methods: [GET]
+            paths: [/health, /v1/delegated/context, "/v1/learners/{*}/progress", /v1/content]
+        - operation:
+            ports: ["8000"]
+            methods: [POST]
+            paths: [/v1/delegated/tools/content.search, /v1/delegated/tools/progress.read, /v1/delegated/tools/assessment.create, /v1/delegated/tools/evidence.record]
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata: {name: opa-gateway-only, namespace: learning-mesh}
+spec:
+  selector: {matchLabels: {app: learning-opa}}
+  action: ALLOW
+  rules:
+    - from:
+        - source: {principals: ["learning.local/ns/learning-mesh/sa/learning-gateway"]}
+      to:
+        - operation:
+            ports: ["8181"]
+            methods: [POST]
+            paths: [/v1/data/learning/authz/decision, /v1/data/learning/tools/decision]

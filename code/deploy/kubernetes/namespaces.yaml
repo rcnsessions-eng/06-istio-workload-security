@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: learning-mesh
+  labels: {istio-injection: enabled, app.kubernetes.io/part-of: zero-trust-workload-security}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: learning-identity-fixtures
+  labels: {istio-injection: disabled, app.kubernetes.io/part-of: zero-trust-workload-security}

@@ -1,0 +1,14 @@
+name: zero-trust-workload-security
+services:
+  checks:
+    image: zero-trust-workload-security-checks:0.1.0
+    build:
+      context: ../..
+      dockerfile: 06-istio-workload-security/code/Dockerfile
+      target: checks
+    read_only: true
+    tmpfs: ["/tmp:size=128m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    network_mode: none

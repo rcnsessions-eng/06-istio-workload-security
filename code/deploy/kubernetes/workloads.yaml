@@ -1,0 +1,192 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: learning-gateway, namespace: learning-mesh}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: learning-opa, namespace: learning-mesh}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: learning-mcp, namespace: learning-mesh}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: unapproved-client, namespace: learning-mesh}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: plaintext-client, namespace: learning-mesh}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: fixture-keycloak, namespace: learning-identity-fixtures}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gateway, namespace: learning-mesh}
+spec:
+  selector: {app: learning-gateway}
+  ports: [{name: http-api, port: 8000, targetPort: 8000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gateway, namespace: learning-mesh}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: learning-gateway}}
+  template:
+    metadata:
+      labels: {app: learning-gateway}
+      annotations: {sidecar.istio.io/rewriteAppHTTPProbers: "true"}
+    spec:
+      serviceAccountName: learning-gateway
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: gateway
+          image: zero-trust-identity-delegation-gateway:0.1.0
+          imagePullPolicy: Never
+          ports: [{containerPort: 8000}]
+          env:
+            - {name: OPA_URL, value: "http://opa:8181"}
+            - {name: LEARNING_ISSUER, value: "http://keycloak.learning-identity-fixtures.svc.cluster.local:8080/realms/learning"}
+            - {name: LEARNING_JWKS_URL, value: "http://keycloak.learning-identity-fixtures.svc.cluster.local:8080/realms/learning/protocol/openid-connect/certs"}
+          readinessProbe: {httpGet: {path: /health, port: 8000}, initialDelaySeconds: 3, periodSeconds: 3}
+          livenessProbe: {httpGet: {path: /health, port: 8000}, initialDelaySeconds: 10, periodSeconds: 10}
+          resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {cpu: "1", memory: 256Mi}}
+          securityContext: {readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {medium: Memory, sizeLimit: 32Mi}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: opa, namespace: learning-mesh}
+spec:
+  selector: {app: learning-opa}
+  ports: [{name: http-policy, port: 8181, targetPort: 8181}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: opa, namespace: learning-mesh}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: learning-opa}}
+  template:
+    metadata: {labels: {app: learning-opa}}
+    spec:
+      serviceAccountName: learning-opa
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: opa
+          image: openpolicyagent/opa:1.21.1-static@sha256:4675ab04ad1627f74741d2d9c5142698c79e18b7b09f192587d31d6dba20838e
+          args: [run, --server, --addr=0.0.0.0:8181, --log-level=error, /policies/authorization.rego, /policies/tools.rego]
+          ports: [{containerPort: 8181}]
+          readinessProbe: {httpGet: {path: /health, port: 8181}, initialDelaySeconds: 3, periodSeconds: 3}
+          resources: {requests: {cpu: 25m, memory: 32Mi}, limits: {cpu: "1", memory: 256Mi}}
+          securityContext: {readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: policies, mountPath: /policies, readOnly: true}]
+      volumes: [{name: policies, configMap: {name: learning-policies}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: keycloak, namespace: learning-identity-fixtures}
+spec:
+  selector: {app: fixture-keycloak}
+  ports: [{name: http-identity, port: 8080, targetPort: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: keycloak, namespace: learning-identity-fixtures}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: fixture-keycloak}}
+  template:
+    metadata: {labels: {app: fixture-keycloak}}
+    spec:
+      serviceAccountName: fixture-keycloak
+      securityContext: {runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: {type: RuntimeDefault}}
+      initContainers:
+        - name: prepare-quarkus
+          image: quay.io/keycloak/keycloak:26.0.7@sha256:4388e2379b7e870a447adbe7b80bd61f5fbf04e925832b19669fda4957f05a81
+          command: [sh, -c, "cp -R /opt/keycloak/lib/quarkus/. /writable/"]
+          resources: {requests: {cpu: 25m, memory: 32Mi}, limits: {cpu: "1", memory: 128Mi}}
+          securityContext: {readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: quarkus, mountPath: /writable}]
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.0.7@sha256:4388e2379b7e870a447adbe7b80bd61f5fbf04e925832b19669fda4957f05a81
+          args: [start-dev, --import-realm, --db=dev-file]
+          env:
+            - {name: KC_HOSTNAME, value: "http://keycloak.learning-identity-fixtures.svc.cluster.local:8080"}
+            - {name: LEARNING_DEMO_PASSWORD, valueFrom: {secretKeyRef: {name: identity-fixtures, key: LEARNING_DEMO_PASSWORD}}}
+            - {name: LEARNING_AGENT_SECRET, valueFrom: {secretKeyRef: {name: identity-fixtures, key: LEARNING_AGENT_SECRET}}}
+          ports: [{containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /realms/learning/.well-known/openid-configuration, port: 8080}, initialDelaySeconds: 5, periodSeconds: 3, failureThreshold: 30}
+          resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {cpu: "2", memory: 1Gi}}
+          securityContext: {readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, seccompProfile: {type: RuntimeDefault}}
+          volumeMounts:
+            - {name: realm, mountPath: /opt/keycloak/data/import, readOnly: true}
+            - {name: data, mountPath: /opt/keycloak/data}
+            - {name: quarkus, mountPath: /opt/keycloak/lib/quarkus}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: realm, configMap: {name: learning-realm}}
+        - {name: data, emptyDir: {sizeLimit: 256Mi}}
+        - {name: quarkus, emptyDir: {sizeLimit: 256Mi}}
+        - {name: tmp, emptyDir: {medium: Memory, sizeLimit: 32Mi}}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: approved-mcp, namespace: learning-mesh, labels: {app: approved-mcp}}
+spec:
+  serviceAccountName: learning-mcp
+  securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+  containers:
+    - name: client
+      image: zero-trust-identity-delegation-gateway:0.1.0
+      imagePullPolicy: Never
+      command: [python, -c, "import signal; signal.pause()"]
+      env:
+        - {name: LEARNING_GATEWAY_URL, value: "http://gateway:8000"}
+        - {name: LEARNING_IDP_URL, value: "http://keycloak.learning-identity-fixtures.svc.cluster.local:8080/realms/learning"}
+        - {name: LEARNING_DEMO_PASSWORD, valueFrom: {secretKeyRef: {name: identity-fixtures, key: LEARNING_DEMO_PASSWORD}}}
+        - {name: LEARNING_AGENT_SECRET, valueFrom: {secretKeyRef: {name: identity-fixtures, key: LEARNING_AGENT_SECRET}}}
+      resources: {requests: {cpu: 10m, memory: 32Mi}, limits: {cpu: "1", memory: 256Mi}}
+      securityContext: {readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: unapproved-client, namespace: learning-mesh, labels: {app: unapproved-client}}
+spec:
+  serviceAccountName: unapproved-client
+  securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+  containers:
+    - name: client
+      image: zero-trust-identity-delegation-gateway:0.1.0
+      imagePullPolicy: Never
+      command: [python, -c, "import signal; signal.pause()"]
+      resources: {requests: {cpu: 10m, memory: 32Mi}, limits: {cpu: "1", memory: 128Mi}}
+      securityContext: {readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: plaintext-client
+  namespace: learning-mesh
+  labels: {app: plaintext-client, sidecar.istio.io/inject: "false"}
+spec:
+  serviceAccountName: plaintext-client
+  securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+  containers:
+    - name: client
+      image: zero-trust-identity-delegation-gateway:0.1.0
+      imagePullPolicy: Never
+      command: [python, -c, "import signal; signal.pause()"]
+      resources: {requests: {cpu: 10m, memory: 32Mi}, limits: {cpu: "1", memory: 128Mi}}
+      securityContext: {readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
